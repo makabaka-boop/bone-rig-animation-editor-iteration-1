@@ -24,6 +24,7 @@ import {
 } from './history';
 import { RevisionGate } from './revision';
 import { takeSnapshot, type RevisionSnapshot } from './snapshot';
+import { reparentKeepPose } from './reparent';
 import { createDefaultDocument } from './defaults';
 import { clamp } from './math2d';
 
@@ -75,6 +76,7 @@ export interface EditorStore {
   addChildBone(parentId: string | null): string | null;
   deleteBone(boneId: string, promoteChildren: boolean): void;
   reparent(boneId: string, newParentId: string | null): boolean;
+  reparentKeepPose(boneId: string, newParentId: string | null): boolean;
   updateBone(boneId: string, patch: Partial<Pick<Bone, 'name' | 'angle' | 'length' | 'minAngle' | 'maxAngle'>>): void;
   // 关键帧
   setKeyframe(boneId: string, time: number, values: { angle: number; length: number }): void;
@@ -193,6 +195,18 @@ export function createEditorStore(initial?: SkeletonDocument): EditorStore {
       const bone = doc.bones[boneId];
       const bones = { ...doc.bones, [boneId]: { ...bone, parentId: newParentId } };
       commitDoc({ ...doc, bones });
+      return true;
+    },
+
+    reparentKeepPose: (boneId, newParentId) => {
+      const doc = state.history.present;
+      const result = reparentKeepPose(doc, boneId, newParentId, {
+        time: state.time,
+        rootPosition: state.rootPosition,
+      });
+      if (!result.ok) return false;
+      // 结构与所有当前帧关键帧在同一个文档对象中提交，构成一条可撤销事务
+      commitDoc(result.doc);
       return true;
     },
 

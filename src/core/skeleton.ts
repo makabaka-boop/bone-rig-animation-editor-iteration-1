@@ -224,7 +224,9 @@ export function sampleTrack(
   for (let i = 0; i < sorted.length - 1; i++) {
     const a = sorted[i];
     const b = sorted[i + 1];
-    if (time >= a.time && time <= b.time) {
+    if (time === a.time) return { angle: a.angle, length: a.length };
+    if (time === b.time) return { angle: b.angle, length: b.length };
+    if (time > a.time && time < b.time) {
       const t = (time - a.time) / (b.time - a.time);
       return {
         angle: lerpAngle(a.angle, b.angle, t),

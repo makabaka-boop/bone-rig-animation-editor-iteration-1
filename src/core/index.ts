@@ -1,6 +1,7 @@
 export * from './types';
 export * from './math2d';
 export * from './skeleton';
+export * from './reparent';
 export * from './ik';
 export * from './history';
 export * from './revision';

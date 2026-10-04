@@ -37,13 +37,12 @@ export function CanvasView() {
       if (dragging.current && pendingPointer.current) {
         const p = pendingPointer.current;
         pendingPointer.current = null;
-        // 用闸门发起一次「计算」：本项目 IK 为同步解，
-        // 这里通过微任务模拟异步调度，验证迟到结果被新修订丢弃
-        const revAtSchedule = store.getState().history.rev;
-        void Promise.resolve().then(() => {
-          if (store.getState().history.rev !== revAtSchedule) return; // 修订已变，丢弃
-          store.updateDrag(p);
-        });
+        // 用统一修订闸门发起「计算」：本项目 IK 为同步解，
+        // 这里通过微任务模拟异步调度，修订变化后的迟到结果必须丢弃
+        store.gate.run(
+          () => p,
+          (target) => store.updateDrag(target)
+        );
       }
       rafRef.current = requestAnimationFrame(loop);
     };
@@ -173,9 +172,11 @@ function useStoreStateFrame() {
   const store = useStore();
   useSyncExternalStore(store.subscribe, store.getState);
   const s = store.getState();
-  const pose = evaluatePose(s.history.present, s.time, { rootPosition: s.rootPosition });
+  const snap = store.getSnapshot();
+  const pose = evaluatePose(snap.doc, s.time, { rootPosition: s.rootPosition });
   return {
     pose,
+    rev: snap.rev,
     selection: s.selection,
     draggingId: s.drag?.childId ?? null,
   };

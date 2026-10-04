@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react';
+import { useSyncExternalStore, useState } from 'react';
 import { useStore } from '../state/useEditor';
 import { evaluatePose, findWorldBone, orderedBoneIds, sampleTrack } from '../core/skeleton';
 import { depthOf } from '../core/skeleton';
@@ -117,6 +117,7 @@ function ParentSelect({ bone }: { bone: Bone }) {
   const store = useStore();
   const state = useSyncExternalStore(store.subscribe, store.getState);
   const doc = state.history.present;
+  const [keepCurrentPose, setKeepCurrentPose] = useState(false);
   if (bone.parentId === null) return null;
 
   // 可作为新父的候选：除自己及自己后代之外的所有骨骼
@@ -138,8 +139,17 @@ function ParentSelect({ bone }: { bone: Bone }) {
         <select
           value={bone.parentId ?? ''}
           onChange={(e) => {
-            const ok = store.reparent(bone.id, e.target.value || null);
-            if (!ok) alert('无法挂到该骨骼：会形成环');
+            const nextParentId = e.target.value || null;
+            const ok = keepCurrentPose
+              ? store.reparentKeepPose(bone.id, nextParentId)
+              : store.reparent(bone.id, nextParentId);
+            if (!ok) {
+              alert(
+                keepCurrentPose
+                  ? '无法保持当前帧姿态：目标可能重合、角度越过限位或文档不合法。'
+                  : '无法挂到该骨骼：会形成环'
+              );
+            }
           }}
         >
           {order
@@ -151,6 +161,17 @@ function ParentSelect({ bone }: { bone: Bone }) {
               </option>
             ))}
         </select>
+      </div>
+      <div className="field">
+        <label>保持当前帧</label>
+        <label style={{ display: 'flex', gap: 6, alignItems: 'center', color: 'var(--text)' }}>
+          <input
+            type="checkbox"
+            checked={keepCurrentPose}
+            onChange={(e) => setKeepCurrentPose(e.target.checked)}
+          />
+          改父时写入当前帧关键帧并保持末端
+        </label>
       </div>
     </div>
   );
