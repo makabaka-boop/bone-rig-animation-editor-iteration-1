@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import { useStore } from '../state/useEditor';
 import { evaluatePose, findWorldBone, orderedBoneIds, sampleTrack } from '../core/skeleton';
 import { depthOf } from '../core/skeleton';
@@ -116,6 +116,8 @@ function ConstraintFields({ bone }: { bone: Bone }) {
 function ParentSelect({ bone }: { bone: Bone }) {
   const store = useStore();
   const state = useSyncExternalStore(store.subscribe, store.getState);
+  // 勾选后改父会保持当前帧姿态：当前时刻写关键帧补偿，失败（零长度/限位）整次拒绝
+  const [preservePose, setPreservePose] = useState(false);
   const doc = state.history.present;
   if (bone.parentId === null) return null;
 
@@ -138,8 +140,17 @@ function ParentSelect({ bone }: { bone: Bone }) {
         <select
           value={bone.parentId ?? ''}
           onChange={(e) => {
-            const ok = store.reparent(bone.id, e.target.value || null);
-            if (!ok) alert('无法挂到该骨骼：会形成环');
+            const target = e.target.value || null;
+            const ok = preservePose
+              ? store.reparentPreservePose(bone.id, target)
+              : store.reparent(bone.id, target);
+            if (!ok) {
+              alert(
+                preservePose
+                  ? '无法保持姿态地改父：目标为自身/后代、所需长度为零或关节限位越界'
+                  : '无法挂到该骨骼：会形成环'
+              );
+            }
           }}
         >
           {order
@@ -151,6 +162,16 @@ function ParentSelect({ bone }: { bone: Bone }) {
               </option>
             ))}
         </select>
+      </div>
+      <div className="field">
+        <label>
+          <input
+            type="checkbox"
+            checked={preservePose}
+            onChange={(e) => setPreservePose(e.target.checked)}
+          />{' '}
+          改父时保持当前帧姿态（写入当前时刻关键帧）
+        </label>
       </div>
     </div>
   );

@@ -169,6 +169,88 @@ export function deleteBonePromoteChildren(
   return { ...doc, bones, tracks, rootId };
 }
 
+/**
+ * 保持当前帧姿态的改父：把 boneId 挂到 newParentId 下，
+ * 同时换算局部量，使 time 这一帧被移动骨骼的末端及整个子树的
+ * 世界端点、世界方向保持不变。
+ *
+ * 做法（全部基于当前文档在 time 处采样到的世界姿态）：
+ * 1. 新父末端即被移动骨骼的新起点；保持其末端不动 → 新长度与新世界方向；
+ * 2. 新局部角 = 新世界方向 − 新父世界方向；
+ * 3. 直接子骨补偿局部角（子骨世界方向 − 被移动骨的新世界方向），
+ *    保持子骨世界方向，从而更下游的后代递归地不动；
+ * 4. 被移动骨与直接子骨在 time 处写入关键帧（角度 + 长度）。
+ *
+ * 只承诺 time 这一帧；其他时刻仍按轨道既有插值播放。
+ * 返回 null 表示整次拒绝（调用方不得留下任何部分修改）：
+ * - 目标父级是自身 / 后代 / 不存在，或对非根骨摘为根；
+ * - 新父末端与被移动骨末端重合：所需长度为零（或小于 1px 可表示下限），
+ *   方向无定义；
+ * - 换算出的任一局部角越过关节限位。
+ */
+export function reparentBonePreservePose(
+  doc: SkeletonDocument,
+  boneId: string,
+  newParentId: string | null,
+  time: number,
+  opts: PoseSampleOptions = {}
+): SkeletonDocument | null {
+  const bone = doc.bones[boneId];
+  if (!bone) return null;
+  if (newParentId === bone.parentId) return doc; // 父子关系未变：无操作
+  if (newParentId === null) return null; // 单根树：非根骨不允许摘为根
+  if (!canReparent(doc.bones, boneId, newParentId)) return null;
+
+  const pose = evaluatePose(doc, time, opts);
+  const moved = findWorldBone(pose, boneId);
+  const parent = findWorldBone(pose, newParentId);
+  if (!moved || !parent) return null;
+
+  // 1+2. 以新父末端为起点、保持本骨末端不动，求新长度与新局部角
+  const dx = moved.end.x - parent.end.x;
+  const dy = moved.end.y - parent.end.y;
+  const newLength = Math.hypot(dx, dy);
+  // 长度为零（或小于 1px 下限，见 upsertKeyframe）时方向无定义，整次拒绝
+  if (!(newLength >= 1)) return null;
+  const newWorldAngle = Math.atan2(dy, dx);
+  const newLocalAngle = normalizeAngle(newWorldAngle - parent.worldAngle);
+  if (!withinJointLimits(newLocalAngle, bone)) return null;
+
+  // 3. 直接子骨：父骨世界方向改变，补偿子骨局部角以保持其世界方向
+  const childIds = childMap(doc.bones).get(boneId) ?? [];
+  const childKeys: Array<{ id: string; angle: number; length: number }> = [];
+  for (const childId of childIds) {
+    const childBone = doc.bones[childId];
+    const cw = findWorldBone(pose, childId);
+    if (!childBone || !cw) return null;
+    const compensated = normalizeAngle(cw.worldAngle - newWorldAngle);
+    if (!withinJointLimits(compensated, childBone)) return null;
+    childKeys.push({ id: childId, angle: compensated, length: cw.length });
+  }
+
+  // 4. 全部可行才落地：改父子关系 + 当前时刻关键帧
+  const bones = { ...doc.bones, [boneId]: { ...bone, parentId: newParentId } };
+  const tracks: Tracks = { ...doc.tracks };
+  tracks[boneId] = upsertKeyframe(
+    tracks[boneId] ?? [],
+    { time, angle: newLocalAngle, length: newLength },
+    bone
+  );
+  for (const ck of childKeys) {
+    tracks[ck.id] = upsertKeyframe(
+      tracks[ck.id] ?? [],
+      { time, angle: ck.angle, length: ck.length },
+      doc.bones[ck.id]
+    );
+  }
+  return { ...doc, bones, tracks };
+}
+
+/** 关节限位检查（带浮点噪声容差） */
+function withinJointLimits(angle: number, bone: Bone): boolean {
+  return angle >= bone.minAngle - 1e-9 && angle <= bone.maxAngle + 1e-9;
+}
+
 /** 在已排序轨道上取某时刻的角度值（用于删骨时补偿子轨道） */
 function interpTrackAngle(frames: Keyframe[], time: number): number {
   if (frames.length === 0) return 0;

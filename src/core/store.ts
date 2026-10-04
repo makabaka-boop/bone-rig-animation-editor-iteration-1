@@ -8,6 +8,7 @@ import {
   evaluatePose,
   findWorldBone,
   MAX_BONES,
+  reparentBonePreservePose,
   upsertKeyframe,
   removeKeyframe,
 } from './skeleton';
@@ -24,6 +25,7 @@ import {
 } from './history';
 import { RevisionGate } from './revision';
 import { takeSnapshot, type RevisionSnapshot } from './snapshot';
+import { hasErrors, validateDocument } from './validation';
 import { createDefaultDocument } from './defaults';
 import { clamp } from './math2d';
 
@@ -75,6 +77,12 @@ export interface EditorStore {
   addChildBone(parentId: string | null): string | null;
   deleteBone(boneId: string, promoteChildren: boolean): void;
   reparent(boneId: string, newParentId: string | null): boolean;
+  /**
+   * 保持当前帧姿态的改父：当前时刻写入必要关键帧（被移动骨的新局部角/长度、
+   * 直接子骨的补偿角），作为一笔可撤销事务提交；只承诺当前帧。
+   * 所需长度为零、任一角度越限位或文档不合法时整次拒绝，返回 false。
+   */
+  reparentPreservePose(boneId: string, newParentId: string | null): boolean;
   updateBone(boneId: string, patch: Partial<Pick<Bone, 'name' | 'angle' | 'length' | 'minAngle' | 'maxAngle'>>): void;
   // 关键帧
   setKeyframe(boneId: string, time: number, values: { angle: number; length: number }): void;
@@ -193,6 +201,29 @@ export function createEditorStore(initial?: SkeletonDocument): EditorStore {
       const bone = doc.bones[boneId];
       const bones = { ...doc.bones, [boneId]: { ...bone, parentId: newParentId } };
       commitDoc({ ...doc, bones });
+      return true;
+    },
+
+    reparentPreservePose: (boneId, newParentId) => {
+      const doc = state.history.present;
+      const bone = doc.bones[boneId];
+      if (!bone) return false;
+      if (newParentId === bone.parentId) return true; // 父子关系未变：无操作
+      // 单根树约束与普通改父一致：非根骨不允许摘为根
+      if (newParentId === null) return false;
+      if (!canReparent(doc.bones, boneId, newParentId)) return false;
+      // 文档本身不合法时，拒绝在带病数据上做姿态换算
+      if (hasErrors(validateDocument(doc))) return false;
+      const next = reparentBonePreservePose(doc, boneId, newParentId, state.time, {
+        rootPosition: state.rootPosition,
+      });
+      // 所需长度为零或任一角度越限位：整次拒绝，不留部分轨道修改
+      if (!next) return false;
+      // 结果文档也必须通过完整性检查，否则整次放弃
+      if (hasErrors(validateDocument(next))) return false;
+      // 一笔事务：commitDoc 推进 rev 并同步 RevisionGate，
+      // 迟到的旧 IK 结果不得覆盖本次修订；进行中的拖动会话被丢弃
+      commitDoc(next);
       return true;
     },
 
